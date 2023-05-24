@@ -1,0 +1,400 @@
+apiVersion: camel.apache.org/v1
+kind: Integration
+metadata:
+  name: notes-service
+spec:
+  flows:
+    - restConfiguration:
+        component: undertow
+        scheme: http
+        host: '{{notes-service.hostname}}'
+        port: '{{notes-service.port}}'
+        contextPath: /notes-service
+        apiContextPath: /notes-service
+        bindingMode: 'off'
+        enableCors: true
+    - rest:
+        delete:
+          - param:
+              - name: user_id
+                type: path
+              - name: note_id
+                type: path
+            path: /notes/{user_id}/{note_id}
+            to: direct:deleteSpecifcNote
+            consumes: application/json
+            produces: application/json
+            description: delete a specifc note of a user.
+        put:
+          - param:
+              - name: user_id
+                type: path
+              - name: note_id
+            path: /notes/{user_id}/{note_id}
+            to: direct:updateSpecificNote
+            consumes: application/json
+            produces: application/json
+            description: update a specific note completely or partially.
+        post:
+          - path: /notes
+            to: direct:createNewNote
+            consumes: application/json
+            produces: application/json
+            description: Create a new note.
+        get:
+          - path: /notes
+            to: direct:getNotes
+            consumes: application/json
+            produces: application/json
+            description: fetches all the notes.
+          - param:
+              - name: note_id
+                type: path
+            path: /note/{note_id}
+            to: direct:getSpecificNotes
+            consumes: application/json
+            produces: application/json
+            description: fetch a specific note for a note id.
+          - param:
+              - name: title
+                type: query
+                required: false
+              - name: category
+                type: query
+                required: false
+              - name: body
+                type: query
+                required: false
+            path: /filterNotes
+            description: fetch specific notes based on filter values
+            to: direct:getFilterNotes
+            consumes: application/json
+            produces: application/json
+          - param:
+              - name: username
+                type: path
+            path: /notes/{username}
+            to: direct:getNotesForUser
+            consumes: application/json
+            produces: application/json
+            description: fetches all the notes for a specific user.
+        path: /notes-app
+        consumes: application/json
+        produces: application/json
+        bindingMode: 'off'
+    - route:
+        from:
+          uri: direct:getNotes
+          steps:
+            - marshal:
+                json:
+                  library: jackson
+            - to:
+                uri: kamelet:mysql-sink
+                parameters:
+                  serverName: '{{database.server.hostname}}'
+                  serverPort: '{{database.server.port}}'
+                  username: '{{database.server.username}}'
+                  password: '{{database.server.password}}'
+                  query: >-
+                    SELECT id, title , category , body , (Select username from
+                    USERS where id = NOTES.user_id) as username from NOTES ;
+                  databaseName: '{{database.server.instance}}'
+            - log:
+                message: 'after query: ${body}'
+                loggingLevel: INFO
+            - marshal:
+                json:
+                  library: jackson
+        id: getNotes
+    - route:
+        from:
+          uri: direct:getFilterNotes
+          steps:
+            - marshal:
+                json:
+                  library: jackson
+            - bean:
+                ref: notesBean
+                method: storeAllQueryLIKEParamsInProperty
+            - to:
+                uri: kamelet:mysql-sink
+                parameters:
+                  serverName: '{{database.server.hostname}}'
+                  serverPort: '{{database.server.port}}'
+                  username: '{{database.server.username}}'
+                  password: '{{database.server.password}}'
+                  query: >-
+                    SELECT id, title , category , body , (Select username from
+                    USERS where id = NOTES.user_id) as username from NOTES where
+                    title like :#${exchangeProperty[title]} or category like
+                    :#${exchangeProperty[category]} or body like
+                    :#${exchangeProperty[body]};
+                  databaseName: '{{database.server.instance}}'
+            - log:
+                message: 'after query: ${body}'
+                loggingLevel: INFO
+            - marshal:
+                json:
+                  library: jackson
+        id: getFilterNotes
+    - route:
+        from:
+          uri: direct:createNewNote
+          steps:
+            - setProperty:
+                name: user_id
+                expression:
+                  simple:
+                    expression: '1'
+            - bean:
+                ref: notesBean
+                method: checkBodyMissing
+            - log:
+                message: 'After Marshal : ${body}'
+            - choice:
+                when:
+                  - expression:
+                      simple:
+                        expression: ${exchangeProperty[bodyMissing]} == true
+                    steps:
+                      - bean:
+                          ref: notesBean
+                          method: handleMissingBodyMessage
+                      - bean:
+                          ref: notesBean
+                          method: displayMessageObject
+                otherwise:
+                  steps:
+                    - doTry:
+                        steps:
+                          - to:
+                              uri: kamelet:mysql-sink
+                              parameters:
+                                serverName: '{{database.server.hostname}}'
+                                serverPort: '{{database.server.port}}'
+                                username: '{{database.server.username}}'
+                                password: '{{database.server.password}}'
+                                query: >-
+                                  INSERT INTO NOTES
+                                  (user_id,title,category,body) VALUES
+                                  (:#${exchangeProperty[user_id]}, :#title,
+                                  :#category, :#body);
+                                databaseName: '{{database.server.instance}}'
+                          - bean:
+                              ref: notesBean
+                              method: setHttpCodeForCreate
+                        doCatch:
+                          - steps:
+                              - setProperty:
+                                  name: message
+                                  expression:
+                                    simple:
+                                      expression: >-
+                                        There already exists a note with title
+                                        :  ${body[title]}.
+                              - bean:
+                                  ref: notesBean
+                                  method: displayMessageObject
+                            exception:
+                              - >-
+                                java.sql.SQLIntegrityConstraintViolationException
+            - marshal:
+                json:
+                  library: jackson
+        id: createNewNote
+    - route:
+        from:
+          uri: direct:getNotesForUser
+          steps:
+            - marshal:
+                json:
+                  library: jackson
+            - bean:
+                ref: notesBean
+                method: storeAllPathParamsInProperty
+            - to:
+                uri: kamelet:mysql-sink
+                parameters:
+                  serverName: '{{database.server.hostname}}'
+                  serverPort: '{{database.server.port}}'
+                  username: '{{database.server.username}}'
+                  password: '{{database.server.password}}'
+                  query: >-
+                    Select id,title,category,body from NOTES where user_id =
+                    (Select id from USERS where username
+                    =:#${exchangeProperty[username]})
+                  databaseName: '{{database.server.instance}}'
+            - marshal:
+                json:
+                  library: jackson
+        id: getNotesForUser
+    - route:
+        from:
+          uri: direct:updateSpecificNote
+          steps:
+            - bean:
+                ref: notesBean
+                method: storeAllPathParamsInProperty
+            - log:
+                message: 'body: ${body}'
+            - bean:
+                ref: notesBean
+                method: storeAllBodyInProperty
+            - to:
+                uri: kamelet:mysql-sink
+                parameters:
+                  serverName: '{{database.server.hostname}}'
+                  serverPort: '{{database.server.port}}'
+                  username: '{{database.server.username}}'
+                  password: '{{database.server.password}}'
+                  query: >-
+                    Select * FROM NOTES WHERE user_id =
+                    :#${exchangeProperty[user_id]} and id=
+                    :#${exchangeProperty[note_id]}
+                  databaseName: '{{database.server.instance}}'
+            - marshal:
+                json:
+                  library: jackson
+            - choice:
+                when:
+                  - expression:
+                      simple:
+                        expression: ${body} == '[]'
+                    steps:
+                      - setProperty:
+                          name: message
+                          expression:
+                            simple:
+                              expression: Entity you want to update is not present.
+                      - bean:
+                          ref: notesBean
+                          method: displayMessageObject
+                otherwise:
+                  steps:
+                    - to:
+                        uri: kamelet:mysql-sink
+                        parameters:
+                          serverName: '{{database.server.hostname}}'
+                          serverPort: '{{database.server.port}}'
+                          username: '{{database.server.username}}'
+                          password: '{{database.server.password}}'
+                          query: >-
+                            UPDATE NOTES SET
+                            body=IFNULL(:#${exchangeProperty[body]},body) ,
+                            category =
+                            IFNULL(:#${exchangeProperty[category]},category) ,  
+                            title=IFNULL(:#${exchangeProperty[title]},title)
+                            WHERE user_id = :#${exchangeProperty[user_id]} and
+                            id= :#${exchangeProperty[note_id]}
+                          databaseName: '{{database.server.instance}}'
+                    - marshal:
+                        json:
+                          library: jackson
+                    - to:
+                        uri: kamelet:mysql-sink
+                        parameters:
+                          serverName: '{{database.server.hostname}}'
+                          serverPort: '{{database.server.port}}'
+                          username: '{{database.server.username}}'
+                          password: '{{database.server.password}}'
+                          query: >-
+                            Select * from NOTES where id =
+                            :#${exchangeProperty[note_id]};
+                          databaseName: '{{database.server.instance}}'
+            - marshal:
+                json:
+                  library: jackson
+        id: updateSpecificNote
+    - route:
+        from:
+          uri: direct:deleteSpecifcNote
+          steps:
+            - marshal:
+                json:
+                  library: jackson
+            - bean:
+                ref: notesBean
+                method: storeAllPathParamsInProperty
+            - to:
+                uri: kamelet:mysql-sink
+                parameters:
+                  serverName: '{{database.server.hostname}}'
+                  serverPort: '{{database.server.port}}'
+                  username: '{{database.server.username}}'
+                  password: '{{database.server.password}}'
+                  query: >-
+                    Select * FROM NOTES WHERE user_id =
+                    :#${exchangeProperty[user_id]} and id=
+                    :#${exchangeProperty[note_id]}
+                  databaseName: '{{database.server.instance}}'
+            - marshal:
+                json:
+                  library: jackson
+            - log:
+                message: 'after query: ${body.length}'
+            - choice:
+                when:
+                  - expression:
+                      simple:
+                        expression: ${body} == '[]'
+                    steps:
+                      - setProperty:
+                          name: message
+                          expression:
+                            simple:
+                              expression: Entity you want to delete is not present.
+                      - bean:
+                          ref: notesBean
+                          method: displayMessageObject
+                otherwise:
+                  steps:
+                    - to:
+                        uri: kamelet:mysql-sink
+                        parameters:
+                          serverName: '{{database.server.hostname}}'
+                          serverPort: '{{database.server.port}}'
+                          username: '{{database.server.username}}'
+                          password: '{{database.server.password}}'
+                          query: >-
+                            DELETE FROM NOTES WHERE id =
+                            :#${exchangeProperty[note_id]} and user_id =
+                            :#${exchangeProperty[user_id]}
+                          databaseName: '{{database.server.instance}}'
+                    - setProperty:
+                        name: message
+                        expression:
+                          simple:
+                            expression: The entity has been deleted successfully.
+                    - bean:
+                        ref: notesBean
+                        method: displayMessageObject
+            - marshal:
+                json:
+                  library: jackson
+        id: deleteSpecifcNote
+    - route:
+        from:
+          uri: direct:getSpecificNotes
+          steps:
+            - marshal:
+                json:
+                  library: jackson
+            - bean:
+                ref: notesBean
+                method: storeAllPathParamsInProperty
+            - to:
+                uri: kamelet:mysql-sink
+                parameters:
+                  serverName: '{{database.server.hostname}}'
+                  serverPort: '{{database.server.port}}'
+                  username: '{{database.server.username}}'
+                  password: '{{database.server.password}}'
+                  query: >-
+                    Select * from NOTES where id =
+                    :#${exchangeProperty[note_id]};
+                  databaseName: '{{database.server.instance}}'
+            - marshal:
+                json:
+                  library: jackson
+        id: getSpecificNotes
