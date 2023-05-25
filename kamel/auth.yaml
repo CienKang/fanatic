@@ -10,9 +10,6 @@ spec:
         host: '{{notes-service.hostname}}'
         port: '{{notes-service.port}}'
         contextPath: /notes-service
-        apiContextPath: /notes-service
-        bindingMode: 'off'
-        enableCors: true
     - rest:
         delete:
           - param:
@@ -123,14 +120,6 @@ spec:
                   serverName: '{{database.server.hostname}}'
                   serverPort: '{{database.server.port}}'
                   username: '{{database.server.username}}'
-                  password: '{{database.server.password}}'
-                  query: >-
-                    SELECT id, title , category , body , (Select username from
-                    USERS where id = NOTES.user_id) as username from NOTES where
-                    title like :#${exchangeProperty[title]} or category like
-                    :#${exchangeProperty[category]} or body like
-                    :#${exchangeProperty[body]};
-                  databaseName: '{{database.server.instance}}'
             - log:
                 message: 'after query: ${body}'
                 loggingLevel: INFO
@@ -213,18 +202,6 @@ spec:
             - bean:
                 ref: notesBean
                 method: storeAllPathParamsInProperty
-            - to:
-                uri: kamelet:mysql-sink
-                parameters:
-                  serverName: '{{database.server.hostname}}'
-                  serverPort: '{{database.server.port}}'
-                  username: '{{database.server.username}}'
-                  password: '{{database.server.password}}'
-                  query: >-
-                    Select id,title,category,body from NOTES where user_id =
-                    (Select id from USERS where username
-                    =:#${exchangeProperty[username]})
-                  databaseName: '{{database.server.instance}}'
             - marshal:
                 json:
                   library: jackson
